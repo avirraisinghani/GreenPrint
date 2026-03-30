@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>GreenPrint — Personal Energy Footprint Calculator</title>
+<meta name="description" content="Calculate your personal energy footprint using verified data. See where your energy goes and how to reduce it."/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=Space+Grotesk:wght@300;400;500&display=swap" rel="stylesheet"/>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:#080f09}
+body{font-family:'Space Grotesk',sans-serif;background:#080f09;color:#d8ead0}
+#root{min-height:100vh}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const{useState,useCallback}=React;
+
+const GLOBAL_AVG=28;
+const CO2_PER_KWH=0.233;
+const CO2_PER_TREE_YR=21;
+
+const CFG={
+  shower: {label:"Shower",      icon:"🚿",unit:"min/day",   min:1,  max:30, step:1,  kwh:v=>v*0.14},
+  ac:     {label:"AC/Heating",  icon:"❄️", unit:"hrs/day",  min:0,  max:16, step:.5, kwh:v=>v*1.5},
+  screen: {label:"Screens",     icon:"💻",unit:"hrs/day",   min:0,  max:16, step:.5, kwh:v=>v*.05},
+  lights: {label:"Lights",      icon:"💡",unit:"hrs/day",   min:0,  max:24, step:1,  kwh:v=>v*.1},
+  laundry:{label:"Laundry",     icon:"🧺",unit:"loads/week",min:0,  max:14, step:1,  kwh:v=>v/7},
+  car:    {label:"Driving",     icon:"🚗",unit:"km/day",    min:0,  max:200,step:5,  kwh:v=>v*.67},
+  meat:   {label:"Meat meals",  icon:"🥩",unit:"meals/week",min:0,  max:21, step:1,  kwh:v=>(v*5)/7},
+  fridges:{label:"Fridges",     icon:"🧊",unit:"count",     min:1,  max:5,  step:1,  kwh:v=>v*1.2},
+};
+
+const DEFAULTS={shower:8,ac:4,screen:6,lights:6,laundry:3,car:20,meat:7,fridges:1};
+
+const RATINGS=[
+  {max:14, label:"Excellent",color:"#4ade80"},
+  {max:22, label:"Good",     color:"#86efac"},
+  {max:28, label:"Average",  color:"#fbbf24"},
+  {max:40, label:"High",     color:"#fb923c"},
+  {max:1e9,label:"Very High",color:"#f87171"},
+];
+
+const INCENTIVES=[
+  {icon:"🛡️",category:"Home & car insurance",   headline:"Carbon-linked premium discounts",  body:"A growing number of insurers have begun trialling carbon-aware pricing, where lower verified energy footprints can qualify for reduced premiums. Terms and availability vary by provider and region.",                                                                                   threshold:20,color:"#4ade80"},
+  {icon:"🏡",category:"Green mortgage",          headline:"Interest rate reductions",          body:"Several banks and building societies offer preferential mortgage rates for energy-efficient households. Eligibility typically requires evidence of low consumption or a good EPC rating.",                                                                                              threshold:22,color:"#2dd4bf"},
+  {icon:"🏢",category:"Employer sustainability", headline:"ESG employee programmes",           body:"Organisations with published net-zero targets increasingly include employee carbon reduction in their ESG strategies, sometimes offering financial recognition for verified reductions.",                                                                                              threshold:25,color:"#60a5fa"},
+  {icon:"🌱",category:"Voluntary carbon markets",headline:"Sell your avoided emissions",       body:"Platforms exist that allow individuals to tokenise verified personal carbon avoidance and sell credits on voluntary markets. Verification standards vary — look for Gold Standard or VCS certification.",                                                                            threshold:18,color:"#a3e635"},
+  {icon:"⚡",category:"Utility demand response", headline:"Cashback for reducing peak load",   body:"Smart meter customers can earn bill credits by reducing consumption during peak demand events. Programmes like this exist in the UK, US and Australia — check your energy supplier's current offerings.",                                                                            threshold:30,color:"#fbbf24"},
+];
+
+const TIPS={
+  shower: {text:"Shorten by 2–3 minutes and fit a low-flow showerhead. A standard electric shower runs at ~8.5 kW — every minute matters.",src:"Energy Saving Trust"},
+  ac:     {text:"Set your thermostat 1–2°C closer to outside temperature and use fans to circulate air. Avoid leaving systems running in empty rooms.",src:"Energy Saving Trust"},
+  screen: {text:"Enable auto-brightness, use dark mode where available, and plug devices into a switched power strip to eliminate standby draw.",src:"Energy Saving Trust"},
+  lights: {text:"Switch to LED bulbs and add motion sensors to rooms you forget to switch off. LEDs use ~75% less energy than older bulbs.",src:"Energy Saving Trust"},
+  laundry:{text:"Wash at 30°C with full loads only. A cold wash uses significantly less energy than a 60°C cycle, and modern detergents work just as well.",src:"Which? / Energy Saving Trust"},
+  car:    {text:"Petrol and diesel cars convert only ~25% of fuel energy into motion. Combining trips, reducing highway speeds and removing roof racks all make a measurable difference.",src:"European Environment Agency"},
+  meat:   {text:"Beef and lamb have the highest embedded energy of any food. Replacing a few meat meals per week with pulses, eggs or chicken significantly reduces your food energy footprint.",src:"Poore & Nemecek (2018), Science"},
+  fridges:{text:"A fridge-freezer uses roughly 1–1.5 kWh/day. Keep it 75% full, clean the coils annually, and ensure it's not next to a heat source.",src:"EU Energy Label data"},
+};
+
+const BENCHMARKS=[
+  {label:"Iceland",      kwh:97,color:"#f87171"},
+  {label:"USA",          kwh:73,color:"#fb923c"},
+  {label:"Australia",    kwh:58,color:"#fbbf24"},
+  {label:"UK",           kwh:32,color:"#86efac"},
+  {label:"World average",kwh:28,color:"#6b9e65"},
+  {label:"EU average",   kwh:26,color:"#4a7044"},
+  {label:"Brazil",       kwh:18,color:"#2dd4bf"},
+  {label:"India",        kwh:8, color:"#60a5fa"},
+];
+
+const BAR_COLORS=["#4ade80","#86efac","#2dd4bf","#a3e635","#fbbf24","#fb923c","#f87171","#c084fc"];
+const TABS=[
+  {id:"track",  label:"Track",  icon:"📊"},
+  {id:"results",label:"Results",icon:"📈"},
+  {id:"earn",   label:"Earn",   icon:"💰"},
+  {id:"compare",label:"Compare",icon:"🌍"},
+];
+
+const fmt=n=>n<10?n.toFixed(2):n<100?n.toFixed(1):Math.round(n)+"";
+const getRating=t=>RATINGS.find(r=>t<=r.max)||RATINGS[RATINGS.length-1];
+
+const S=`
+.gp{font-family:'Space Grotesk',sans-serif;background:#080f09;color:#d8ead0;min-height:100vh}
+.gp *{box-sizing:border-box;margin:0;padding:0}
+.hdr{position:sticky;top:0;z-index:50;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 28px;height:58px;background:rgba(8,15,9,.97);backdrop-filter:blur(20px);border-bottom:1px solid rgba(255,255,255,.05)}
+.hdr-brand h1{font-family:'Syne',sans-serif;font-weight:800;font-size:17px;letter-spacing:-.4px;color:#d8ead0;line-height:1}
+.hdr-brand .by{font-size:9px;color:#2d4f2a;letter-spacing:.8px;margin-top:1px}
+.hdr-nav{display:flex;gap:1px;background:rgba(255,255,255,.04);border-radius:9px;padding:3px}
+.nav-btn{background:none;border:none;padding:5px 13px;border-radius:6px;font-size:11px;font-weight:500;color:#4a7044;cursor:pointer;font-family:'Space Grotesk',sans-serif;transition:all .18s;white-space:nowrap}
+.nav-btn.on{background:rgba(255,255,255,.08);color:#d8ead0}
+.nav-btn:hover:not(.on){color:#8ab882}
+.hdr-total{display:flex;align-items:baseline;gap:5px;flex-shrink:0}
+.hdr-dot{width:5px;height:5px;border-radius:50%;background:#4ade80;box-shadow:0 0 6px #4ade80;animation:pulse 2s ease-in-out infinite;margin-right:2px}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.hdr-num{font-family:'Syne',sans-serif;font-size:21px;font-weight:800;letter-spacing:-1px;color:#d8ead0}
+.hdr-unit{font-size:11px;color:#4a7044}
+.bottom-nav{position:fixed;bottom:0;left:0;right:0;z-index:50;display:flex;background:rgba(8,15,9,.97);backdrop-filter:blur(20px);border-top:1px solid rgba(255,255,255,.06);height:56px}
+.bnav-btn{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;background:none;border:none;cursor:pointer;font-family:'Space Grotesk',sans-serif;padding:0;position:relative;transition:all .18s}
+.bnav-ind{position:absolute;top:0;left:50%;transform:translateX(-50%);height:2px;width:20px;border-radius:0 0 2px 2px;background:#4ade80;opacity:0;transition:opacity .18s}
+.bnav-btn.on .bnav-ind{opacity:1}
+.bnav-ico{font-size:16px;line-height:1}
+.bnav-lbl{font-size:9px;font-weight:500;color:#4a7044;letter-spacing:.3px;transition:color .18s}
+.bnav-btn.on .bnav-lbl{color:#4ade80}
+.bnav-btn:hover .bnav-lbl{color:#8ab882}
+.body{max-width:860px;margin:0 auto;padding:44px 28px 76px}
+.page{animation:up .3s ease forwards}
+@keyframes up{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+.eyebrow{font-size:10px;text-transform:uppercase;letter-spacing:1.8px;color:#2d4f2a;font-weight:500;margin-bottom:10px;display:block}
+.page-title{font-family:'Syne',sans-serif;font-weight:800;letter-spacing:-.6px;color:#d8ead0;font-size:clamp(26px,4vw,40px);margin-bottom:10px;line-height:1.05}
+.page-title em{font-style:normal;color:#4ade80}
+.page-sub{font-size:13px;color:#4a7044;font-weight:300;line-height:1.8;margin-bottom:44px;max-width:520px}
+.sl-list{display:flex;flex-direction:column;margin-bottom:40px}
+.sl-item{display:grid;grid-template-columns:22px 1fr 64px;align-items:center;gap:16px;padding:16px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.sl-item:last-child{border-bottom:none}
+.sl-icon{font-size:15px;text-align:center}
+.sl-mid{display:flex;flex-direction:column;gap:9px}
+.sl-meta{display:flex;align-items:center;justify-content:space-between}
+.sl-name{font-size:12px;font-weight:500;color:#6b9e65}
+.sl-pill{font-size:11px;font-weight:600;color:#d8ead0;background:rgba(255,255,255,.05);border-radius:4px;padding:2px 7px;font-family:'Syne',sans-serif}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:3px;border-radius:100px;background:#1a2e1a;outline:none;cursor:pointer}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:15px;height:15px;border-radius:50%;background:#4ade80;box-shadow:0 0 0 3px rgba(74,222,128,.15);margin-top:-6px;cursor:pointer;transition:box-shadow .15s}
+input[type=range]:active::-webkit-slider-thumb{box-shadow:0 0 0 6px rgba(74,222,128,.2)}
+input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%;background:#4ade80;border:none}
+.sl-right{text-align:right}
+.sl-kwh{font-family:'Syne',sans-serif;font-size:14px;font-weight:800;letter-spacing:-.3px}
+.sl-ku{font-size:8px;color:#2d4f2a;letter-spacing:.5px;margin-top:1px}
+.analyse-btn{display:block;width:100%;padding:15px;background:#4ade80;color:#080f09;font-family:'Syne',sans-serif;font-size:14px;font-weight:800;border:none;border-radius:11px;cursor:pointer;transition:opacity .15s,transform .15s}
+.analyse-btn:hover{opacity:.85;transform:translateY(-1px)}
+.back-btn{background:none;border:none;color:#4a7044;font-size:11px;font-weight:500;cursor:pointer;font-family:'Space Grotesk',sans-serif;padding:0;margin-bottom:36px;display:inline-flex;align-items:center;gap:5px;transition:color .15s}
+.back-btn:hover{color:#d8ead0}
+.score-hero{margin-bottom:40px}
+.score-row{display:flex;align-items:flex-end;gap:12px;margin-bottom:8px}
+.score-big{font-family:'Syne',sans-serif;font-size:72px;font-weight:800;letter-spacing:-4px;line-height:1}
+.score-aside{padding-bottom:8px}
+.score-unit-lbl{font-size:16px;color:#4a7044;display:block;margin-bottom:5px}
+.score-badge{font-family:'Syne',sans-serif;font-size:10px;font-weight:700;letter-spacing:.5px;padding:4px 11px;border-radius:100px;display:inline-block}
+.score-context{font-size:12px;color:#4a7044;margin-top:8px}
+.stats-strip{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:rgba(255,255,255,.04);border-radius:10px;overflow:hidden;margin-bottom:44px}
+.stat-cell{background:#080f09;padding:18px}
+.stat-val{font-family:'Syne',sans-serif;font-size:22px;font-weight:800;letter-spacing:-1px;color:#d8ead0;margin-top:6px}
+.stat-sub{font-size:10px;color:#2d4f2a;margin-top:3px}
+.bars-wrap{margin-bottom:44px}
+.bar-row{display:flex;align-items:center;gap:12px;margin-bottom:11px}
+.bar-row:last-child{margin-bottom:0}
+.bar-ico{font-size:13px;width:18px;text-align:center;flex-shrink:0}
+.bar-lbl{font-size:11px;color:#4a7044;width:80px;flex-shrink:0}
+.bar-track{flex:1;height:3px;background:#1a2e1a;border-radius:100px;overflow:hidden}
+.bar-fill{height:100%;border-radius:100px;animation:barin .8s cubic-bezier(.4,0,.2,1) forwards}
+@keyframes barin{from{width:0!important}}
+.bar-num{font-family:'Syne',sans-serif;font-size:11px;font-weight:700;min-width:36px;text-align:right}
+.tip-row{display:grid;grid-template-columns:28px 1fr;gap:14px;align-items:start;padding:20px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.tip-row:last-child{border-bottom:none}
+.tip-num{font-family:'Syne',sans-serif;font-size:10px;font-weight:800;color:#2d4f2a;padding-top:2px}
+.tip-cat{font-size:13px;font-weight:500;color:#d8ead0;margin-bottom:4px;display:flex;align-items:center;gap:6px}
+.tip-body{font-size:11px;color:#4a7044;line-height:1.7;font-weight:300}
+.tip-src{font-size:9px;color:#2d4f2a;margin-top:5px}
+.earn-list{display:flex;flex-direction:column}
+.earn-row{display:grid;grid-template-columns:32px 1fr auto;gap:16px;align-items:start;padding:24px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.earn-row:last-child{border-bottom:none}
+.earn-ico{font-size:18px;text-align:center;padding-top:2px}
+.earn-cat{font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:#2d4f2a;margin-bottom:5px}
+.earn-headline{font-family:'Syne',sans-serif;font-size:16px;font-weight:800;letter-spacing:-.3px;margin-bottom:6px}
+.earn-body{font-size:11px;color:#4a7044;line-height:1.7;font-weight:300}
+.earn-thresh{font-size:10px;color:#2d4f2a;margin-top:7px}
+.earn-prog-wrap{margin-top:10px}
+.earn-prog-track{height:2px;background:#1a2e1a;border-radius:100px;overflow:hidden}
+.earn-prog-fill{height:100%;border-radius:100px}
+.earn-prog-lbl{font-size:9px;color:#2d4f2a;margin-top:3px}
+.earn-tag{font-size:9px;font-weight:700;padding:4px 10px;border-radius:100px;white-space:nowrap;letter-spacing:.3px}
+.benchmarks{display:flex;flex-direction:column;gap:0;margin-bottom:44px}
+.bm-row{display:flex;align-items:center;gap:14px;padding:14px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.bm-row:last-child{border-bottom:none}
+.bm-row.you-row{background:rgba(74,222,128,.03);margin:0 -8px;padding:14px 8px;border-radius:8px;border-bottom:none}
+.bm-label{font-size:12px;color:#6b9e65;min-width:140px;flex-shrink:0;display:flex;align-items:center;gap:6px}
+.bm-you-tag{font-size:7px;color:#4ade80;letter-spacing:.8px;font-weight:700;background:rgba(74,222,128,.1);padding:2px 5px;border-radius:3px}
+.bm-track{flex:1;height:4px;background:#1a2e1a;border-radius:100px;overflow:hidden}
+.bm-fill{height:100%;border-radius:100px}
+.bm-val{font-family:'Syne',sans-serif;font-size:13px;font-weight:800;min-width:80px;text-align:right}
+.method-box{background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.05);border-radius:10px;padding:20px}
+.method-title{font-size:11px;font-weight:600;color:#6b9e65;margin-bottom:14px}
+.method-item{display:grid;grid-template-columns:90px 1fr;gap:10px;font-size:11px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.method-item:last-child{border-bottom:none}
+.method-cat{color:#4a7044}
+.method-detail{color:#2d4f2a;font-size:10px;line-height:1.6}
+@media(max-width:580px){
+  .hdr-nav{display:none}
+  .stats-strip{grid-template-columns:1fr 1fr}
+  .hdr{padding:0 16px}
+  .body{padding:36px 16px 72px}
+  .score-big{font-size:56px}
+  .bm-label{min-width:110px}
+}
+`;
+
+function TrackTab({vals,onChange,onAnalyse}){
+  return(
+    <div className="page">
+      <span className="eyebrow">Personal energy calculator</span>
+      <div className="page-title">Know your<br/><em>footprint.</em></div>
+      <p className="page-sub">Adjust each slider to match your daily habits. All figures use verified energy coefficients — see the Compare tab for methodology.</p>
+      <div className="sl-list">
+        {Object.entries(CFG).map(([id,c])=>{
+          const kwh=c.kwh(vals[id]);
+          const r=getRating(kwh*5);
+          const pct=((vals[id]-c.min)/(c.max-c.min))*100;
+          return(
+            <div key={id} className="sl-item">
+              <div className="sl-icon">{c.icon}</div>
+              <div className="sl-mid">
+                <div className="sl-meta">
+                  <span className="sl-name">{c.label}</span>
+                  <span className="sl-pill">{vals[id]} <span style={{fontSize:9,color:"#4a7044"}}>{c.unit}</span></span>
+                </div>
+                <input type="range" min={c.min} max={c.max} step={c.step} value={vals[id]}
+                  style={{background:`linear-gradient(90deg,#4ade80 ${pct}%,#1a2e1a ${pct}%)`}}
+                  onChange={e=>onChange(id,parseFloat(e.target.value))}/>
+              </div>
+              <div className="sl-right">
+                <div className="sl-kwh" style={{color:r.color}}>{fmt(kwh)}</div>
+                <div className="sl-ku">kWh/day</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <button className="analyse-btn" onClick={onAnalyse}>See my results →</button>
+    </div>
+  );
+}
+
+function ResultsTab({vals,total,onBack}){
+  const r=getRating(total);
+  const yearly=Math.round(total*365);
+  const below=total<GLOBAL_AVG;
+  const co2SavedYr=below?(GLOBAL_AVG-total)*CO2_PER_KWH*365:0;
+  const treeEquiv=(co2SavedYr/CO2_PER_TREE_YR).toFixed(1);
+  const items=Object.entries(CFG).map(([id,c])=>({id,c,kwh:c.kwh(vals[id])})).sort((a,b)=>b.kwh-a.kwh);
+  const maxK=Math.max(...items.map(i=>i.kwh),.1);
+  const tColors=["#4ade80","#86efac","#fbbf24","#fb923c"];
+  return(
+    <div className="page">
+      <button className="back-btn" onClick={onBack}>← Back to sliders</button>
+      <div className="score-hero">
+        <span className="eyebrow">Your daily energy footprint</span>
+        <div className="score-row">
+          <div className="score-big" style={{color:r.color}}>{fmt(total)}</div>
+          <div className="score-aside">
+            <span className="score-unit-lbl">kWh/day</span>
+            <span className="score-badge" style={{background:r.color+"18",color:r.color}}>{r.label}</span>
+          </div>
+        </div>
+        <div className="score-context">{((total/GLOBAL_AVG)*100).toFixed(0)}% of the 28 kWh/day world average (IEA 2022)</div>
+      </div>
+      <div className="stats-strip">
+        <div className="stat-cell">
+          <span className="eyebrow">Per year</span>
+          <div className="stat-val">{yearly.toLocaleString()}</div>
+          <div className="stat-sub">kWh / year</div>
+        </div>
+        <div className="stat-cell">
+          <span className="eyebrow">{below?"CO₂ saved vs avg":"CO₂ above avg"}</span>
+          <div className="stat-val" style={{color:below?"#4ade80":"#f87171"}}>
+            {below?(co2SavedYr/1000).toFixed(1)+" t":"+"+((total-GLOBAL_AVG)*CO2_PER_KWH*365/1000).toFixed(1)+" t"}
+          </div>
+          <div className="stat-sub">vs world average / year</div>
+        </div>
+        <div className="stat-cell">
+          <span className="eyebrow">{below?"Tree equivalent":"vs world avg"}</span>
+          <div className="stat-val" style={{color:below?"#4ade80":"#f87171"}}>
+            {below?treeEquiv:"+"+fmt(total-GLOBAL_AVG)}
+          </div>
+          <div className="stat-sub">{below?"trees absorbing your saving":"kWh/day over avg"}</div>
+        </div>
+      </div>
+      <div className="bars-wrap">
+        <span className="eyebrow" style={{marginBottom:16,display:"block"}}>Breakdown by category</span>
+        {items.map((it,i)=>(
+          <div key={it.id} className="bar-row">
+            <span className="bar-ico">{it.c.icon}</span>
+            <span className="bar-lbl">{it.c.label}</span>
+            <div className="bar-track">
+              <div className="bar-fill" style={{width:(it.kwh/maxK*100)+"%",background:BAR_COLORS[i]}}/>
+            </div>
+            <span className="bar-num" style={{color:BAR_COLORS[i]}}>{fmt(it.kwh)}</span>
+          </div>
+        ))}
+      </div>
+      <div>
+        <span className="eyebrow" style={{marginBottom:8,display:"block"}}>Where to focus first</span>
+        {items.slice(0,4).map((it,i)=>(
+          <div key={it.id} className="tip-row">
+            <div className="tip-num" style={{color:tColors[i]}}>#{i+1}</div>
+            <div>
+              <div className="tip-cat">{it.c.icon} {it.c.label}</div>
+              <div className="tip-body">{TIPS[it.id].text}</div>
+              <div className="tip-src">Source: {TIPS[it.id].src}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function EarnTab({total}){
+  return(
+    <div className="page">
+      <span className="eyebrow">Financial incentives</span>
+      <div className="page-title">Reducing has<br/><em>real value.</em></div>
+      <p className="page-sub">These categories of incentive programmes exist — but terms, availability and amounts vary by provider, country and time. Always verify directly with the provider before making decisions.</p>
+      <div className="earn-list">
+        {INCENTIVES.map((inc,i)=>{
+          const q=total<=inc.threshold;
+          const near=!q&&total<=inc.threshold*1.3;
+          const prog=Math.min(100,(inc.threshold/total)*100);
+          return(
+            <div key={i} className="earn-row">
+              <div className="earn-ico">{inc.icon}</div>
+              <div>
+                <div className="earn-cat">{inc.category}</div>
+                <div className="earn-headline" style={{color:q?inc.color:"#d8ead0"}}>{inc.headline}</div>
+                <div className="earn-body">{inc.body}</div>
+                <div className="earn-thresh">Programmes in this category typically require ≤{inc.threshold} kWh/day</div>
+                {near&&(
+                  <div className="earn-prog-wrap">
+                    <div className="earn-prog-track">
+                      <div className="earn-prog-fill" style={{width:prog+"%",background:inc.color}}/>
+                    </div>
+                    <div className="earn-prog-lbl">You are {fmt(total-inc.threshold)} kWh/day above this threshold</div>
+                  </div>
+                )}
+              </div>
+              <div>
+                <div className="earn-tag" style={{
+                  background:q?inc.color+"14":near?"#fbbf2412":"transparent",
+                  color:q?inc.color:near?"#fbbf24":"#2d4f2a",
+                }}>
+                  {q?"In range":near?"Close":"Above"}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function CompareTab({total}){
+  const all=[...BENCHMARKS,{label:"You",kwh:parseFloat(fmt(total)),color:"#4ade80",isYou:true}]
+    .sort((a,b)=>b.kwh-a.kwh);
+  const maxKwh=all[0].kwh;
+  return(
+    <div className="page">
+      <span className="eyebrow">Global context</span>
+      <div className="page-title">Where you sit<br/>in the <em>world.</em></div>
+      <p className="page-sub">Your footprint compared to national per-capita averages. All figures are total final energy consumption from IEA World Energy Balances 2022.</p>
+      <div className="benchmarks">
+        {all.map(bm=>(
+          <div key={bm.label} className={`bm-row${bm.isYou?" you-row":""}`}>
+            <div className="bm-label">
+              {bm.label}
+              {bm.isYou&&<span className="bm-you-tag">YOU</span>}
+            </div>
+            <div className="bm-track">
+              <div className="bm-fill" style={{
+                width:(bm.kwh/maxKwh*100)+"%",
+                background:bm.isYou?"#4ade80":bm.color,
+                opacity:bm.isYou?1:.55,
+                animation:"barin .8s cubic-bezier(.4,0,.2,1) forwards",
+              }}/>
+            </div>
+            <div className="bm-val" style={{color:bm.isYou?"#4ade80":"#6b9e65"}}>
+              {fmt(bm.kwh)} <span style={{fontSize:9,color:"#2d4f2a"}}>kWh/day</span>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="method-box">
+        <div className="method-title">Calculation methodology</div>
+        <div>
+          {[
+            {cat:"🚿 Shower",   detail:"minutes × 0.14 kWh/min · Based on 8.5 kW average electric shower · Source: Energy Saving Trust"},
+            {cat:"❄️ AC/Heating",detail:"hours × 1.5 kWh/hr · Average across AC units and resistance heating · Source: Energy Saving Trust"},
+            {cat:"💻 Screens",  detail:"hours × 0.05 kWh/hr · ~50W average across desktop, laptop, phone, TV · Source: Energy Saving Trust"},
+            {cat:"💡 Lights",   detail:"hours × 0.10 kWh/hr · 10 LED bulbs at 10W each · Source: Energy Saving Trust"},
+            {cat:"🧺 Laundry",  detail:"loads ÷ 7 × 1 kWh/load · EU average wash cycle · Source: EU Energy Label"},
+            {cat:"🚗 Driving",  detail:"km × 0.67 kWh/km · 7.5 L/100 km petrol × 8.9 kWh/litre · Source: EEA / IEA"},
+            {cat:"🥩 Meat",     detail:"meals ÷ 7 × 5 kWh/meal · Embedded energy, blended meat average · Source: Poore & Nemecek, Science 2018"},
+            {cat:"🧊 Fridges",  detail:"count × 1.2 kWh/day · EU Energy Label average fridge-freezer · Source: EU Energy Label"},
+          ].map(m=>(
+            <div key={m.cat} className="method-item">
+              <span className="method-cat">{m.cat}</span>
+              <span className="method-detail">{m.detail}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function App(){
+  const[vals,setVals]=useState(DEFAULTS);
+  const[tab,setTab]=useState("track");
+  const total=Object.entries(CFG).reduce((s,[id,c])=>s+c.kwh(vals[id]),0);
+  const onChange=useCallback((id,v)=>setVals(p=>({...p,[id]:v})),[]);
+  return(
+    <>
+      <style>{S}</style>
+      <div className="gp">
+        <div className="hdr">
+          <div className="hdr-brand">
+            <h1>GreenPrint</h1>
+            <div className="by">by Avir Raisinghani</div>
+          </div>
+          <div className="hdr-nav">
+            {TABS.map(t=>(
+              <button key={t.id} className={`nav-btn${tab===t.id?" on":""}`} onClick={()=>setTab(t.id)}>{t.label}</button>
+            ))}
+          </div>
+          <div className="hdr-total">
+            <div className="hdr-dot"/>
+            <span className="hdr-num">{fmt(total)}</span>
+            <span className="hdr-unit">kWh/day</span>
+          </div>
+        </div>
+        <div className="body">
+          {tab==="track"  &&<TrackTab   vals={vals} onChange={onChange} onAnalyse={()=>setTab("results")}/>}
+          {tab==="results"&&<ResultsTab vals={vals} total={total} onBack={()=>setTab("track")}/>}
+          {tab==="earn"   &&<EarnTab    total={total}/>}
+          {tab==="compare"&&<CompareTab total={total}/>}
+        </div>
+        <div className="bottom-nav">
+          {TABS.map(t=>(
+            <button key={t.id} className={`bnav-btn${tab===t.id?" on":""}`} onClick={()=>setTab(t.id)}>
+              <div className="bnav-ind"/>
+              <div className="bnav-ico">{t.icon}</div>
+              <div className="bnav-lbl">{t.label}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+</script>
+</body>
+</html>
